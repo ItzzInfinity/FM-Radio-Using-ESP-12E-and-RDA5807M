@@ -8,6 +8,9 @@
 
 This project is a simple yet functional FM radio receiver built using an ESP12E microcontroller and the RDA5807M FM module. It allows for station switching and volume control via a button interface. The radio is powered by a Li-Ion battery and uses a TP4056 module for charging. The audio output is amplified by a PAM8403 module and delivered through a 10-watt speaker.
 
+## 📌 Circuit Diagram
+- ![Graphical View](https://github.com/ItzzInfinity/FM-Radio-Using-ESP-12E-and-RDA5807M/blob/main/Circuit/Radio_i2c_bb.png)
+
 ## Features
 
 - **Station Switching**: Cycle through 10 preset FM stations.
