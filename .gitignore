@@ -1,0 +1,16 @@
+.vscode/
+
+# Wi-Fi / OTA credentials. Copy secrets.h.example to secrets.h and edit that.
+Src/test_I2C_Radio/secrets.h
+
+# KiCad generated / user-local files
+*-backups/
+*.kicad_prl
+fp-info-cache
+_autosave-*
+*.bak
+*~
+
+# Stale gerber exports: these predate the current board file. Regenerate from
+# hardware/ with `kicad-cli pcb export gerbers` before ordering.
+hardware/Drill/
