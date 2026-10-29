@@ -13,8 +13,8 @@ and the firmware picks its pin map from whichever core you compile for.
 Audio leaves the board on a 2-pin header to a PAM8403 amplifier and a speaker;
 a telescopic antenna solders to a plated mounting hole. Beyond the original
 button-cycles-presets behaviour, the current firmware brings up Wi-Fi and serves
-a web UI at `http://radio.local` for presets, volume, seek and manual tuning,
-supports OTA reflashing, and optionally drives an SSD1306/SH1106 OLED.
+a web UI at `http://radio.local` for presets, volume, seek and manual tuning
+(seek saves each new station it finds into a free preset slot), supports OTA reflashing, and optionally drives an SSD1306/SH1106 OLED.
 
 ![Assembled board, top view](docs/images/pcb-top.png)
 
@@ -159,7 +159,7 @@ The web page is served from flash at `/` and drives these endpoints:
 | `GET /api/preset` | Select a preset slot |
 | `GET /api/tune` | Tune to a frequency |
 | `GET /api/volume` | Set volume 0–15 |
-| `GET /api/seek` | Hardware seek up/down |
+| `GET /api/seek` | Hardware seek up/down; a new station is saved to the next unnamed preset slot (`seekSaved` in the reply, `-1` if not saved). Disable with `SEEK_AUTOSAVE 0` |
 | `GET /api/preset/set` | Rewrite a preset slot (persisted) |
 | `GET /api/oled` | Switch controller: `ssd1306` / `sh1106` / `none` |
 | `GET`/`POST /update` | Browser firmware upload |
@@ -184,8 +184,8 @@ Verified with arduino-cli 1.5.1, esp32 core 3.3.8, esp8266 core 3.1.2:
 
 | Target | Flash | RAM |
 |--------|-------|-----|
-| ESP32-C3 | 1,130,767 / 1,310,720 B (86%) | 44,252 / 327,680 B (13%) |
-| ESP-12E | 340,684 / 1,048,576 B (32%) | 31,864 / 80,192 B (39%) |
+| ESP32-C3 | 1,131,513 / 1,310,720 B (86%) | 44,252 / 327,680 B (13%) |
+| ESP-12E | 341,372 / 1,048,576 B (32%) | 31,912 / 80,192 B (39%) |
 
 Two figures worth watching: the ESP32-C3 build is at **86% of the default
 1.3 MB app partition**, and the ESP-12E build sits at **93% of IRAM**

@@ -14,6 +14,8 @@
  *    - Station + volume + presets persist across power cycles
  *    - Optional SSD1306 / SH1106 OLED, auto-detected on the I2C bus and
  *      switchable from the web page without reflashing
+ *    - Seek saves each new station it finds into the preset list, skipping
+ *      duplicates and never overwriting a slot you have renamed
  *    - Hardware button still cycles presets with no Wi-Fi at all
  *
  *  Wiring (unchanged from the original board)
@@ -85,6 +87,13 @@
 static const uint16_t FACTORY_PRESETS[PRESET_COUNT] = {
   10620, 9270, 9350, 9430, 9830, 10130, 10260, 10400, 10480, 10640
 };
+
+// Seek-to-save: a seek that lands on a real station not already in the list
+// stores it in the next reusable slot, walking the list as a ring. A slot is
+// reusable while its name is still just its own frequency (factory default or
+// an earlier auto-save); renaming a slot in the editor protects it. Set to 0
+// for a plain seek that never touches the presets.
+#define SEEK_AUTOSAVE 1
 
 // Volume 0..15 on a fresh board.
 #define DEFAULT_VOLUME 13
@@ -158,7 +167,10 @@ struct Settings {
   uint8_t  presetIdx;               // 0..9, or PRESET_MANUAL
   uint8_t  volume;                  // 0..15
   uint8_t  oledType;                // OLED_TYPE_*
-  uint8_t  pad;
+  // Next slot seek-to-save tries. This byte used to be padding, so records
+  // written by older builds load unchanged (it reads as 0) and SETTINGS_VER
+  // did not need a bump that would wipe the presets.
+  uint8_t  autoSlot;
   Preset   presets[PRESET_COUNT];
   uint16_t crc;
 };
@@ -228,6 +240,7 @@ static void settingsLoad() {
     if (cfg.presetIdx >= PRESET_COUNT && cfg.presetIdx != PRESET_MANUAL) cfg.presetIdx = 0;
     if (cfg.freq10k < 8700 || cfg.freq10k > 10800) cfg.freq10k = FACTORY_PRESETS[0];
     if (cfg.oledType > OLED_TYPE_SH1106) cfg.oledType = OLED_DEFAULT;
+    if (cfg.autoSlot >= PRESET_COUNT) cfg.autoSlot = 0;
     for (uint8_t i = 0; i < PRESET_COUNT; i++) {
       cfg.presets[i].name[PRESET_NAME_LEN - 1] = '\0';
       if (cfg.presets[i].freq10k < 8700 || cfg.presets[i].freq10k > 10800)
@@ -372,17 +385,24 @@ public:
   }
   uint16_t frequency() const { return _freq; }
 
-  // Hardware seek. Returns where it actually landed.
+  // Hardware seek. Returns where it actually landed; seekFound() says whether
+  // that is a station or just the band edge / a timeout.
   uint16_t seek(bool up) {
+    _seekFound = false;
     if (!_present) return _freq;
     uint16_t c = _ctrl | RDA_SEEK | RDA_SKMODE;     // SKMODE: stop at band edge
     if (up) c |= RDA_SEEKUP; else c &= (uint16_t)~RDA_SEEKUP;
     writeReg(RDA_REG_CTRL, c);
     waitForSTC(3000);                                // a full sweep can be slow
+    // Read STC/SF before clearing SEEK: clearing it resets both flags. SF is
+    // set when the sweep hit the band edge without finding anything.
+    uint16_t st = readReg0A();
     writeReg(RDA_REG_CTRL, _ctrl);                   // clear the seek request
     readStatus(true);
+    _seekFound = (st & RDA_STC) && !(st & RDA_SF) && _tuned;
     return _freq;
   }
+  bool seekFound() const { return _seekFound; }
 
   // Refreshes the cached RSSI / stereo / tuned flags, at most every 500 ms
   // unless forced.
@@ -451,6 +471,7 @@ private:
   uint8_t       _rssi       = 0;
   bool          _stereo     = false;
   bool          _tuned      = false;
+  bool          _seekFound  = false;
   unsigned long _lastStatus = 0;
 };
 
@@ -654,6 +675,47 @@ static void nextPreset() {
   applyPreset(next);
 }
 
+// A slot whose name is still its own frequency was never named by the user,
+// so seek may reuse it. Renamed slots are favourites and are left alone.
+static bool presetIsAuto(uint8_t i) {
+  char fbuf[10];
+  freqToStr(cfg.presets[i].freq10k, fbuf, sizeof(fbuf));
+  return strcmp(cfg.presets[i].name, fbuf) == 0;
+}
+
+// Seeks and, with SEEK_AUTOSAVE, stores a newly found station in the next
+// reusable slot. The ring starts at cfg.autoSlot so repeated seeks walk the
+// list instead of churning slot 0. Returns the slot written, or -1 when
+// nothing was saved: no station, already listed, or every slot renamed.
+static int8_t seekAndSave(bool up) {
+  uint16_t landed = RDA5807M::clampFreq(radio.seek(up));
+  int8_t saved = -1;
+
+#if SEEK_AUTOSAVE
+  bool listed = false;
+  for (uint8_t i = 0; i < PRESET_COUNT; i++)
+    if (cfg.presets[i].freq10k == landed) { listed = true; break; }
+
+  if (radio.seekFound() && !listed) {
+    for (uint8_t k = 0; k < PRESET_COUNT; k++) {
+      uint8_t i = (uint8_t)((cfg.autoSlot + k) % PRESET_COUNT);
+      if (!presetIsAuto(i)) continue;
+      cfg.presets[i].freq10k = landed;
+      freqToStr(landed, cfg.presets[i].name, PRESET_NAME_LEN);
+      cfg.autoSlot = (uint8_t)((i + 1) % PRESET_COUNT);
+      saved = (int8_t)i;
+      break;
+    }
+  }
+#endif
+
+  // applyFrequency() persists via settingsTouch(), which also covers the
+  // preset just written.
+  applyFrequency(landed, saved >= 0 ? (uint8_t)saved : PRESET_MANUAL);
+  if (saved >= 0) Serial.printf("[seek] saved to slot %d\n", saved + 1);
+  return saved;
+}
+
 // ===========================================================================
 //  7. WEB UI
 // ===========================================================================
@@ -721,9 +783,10 @@ label{display:block;font-size:12px;color:var(--dim);margin:0 0 5px;text-transfor
   <div class="lbl">Volume <span id="vv">-</span>/15</div>
   <input type="range" id="vol" min="0" max="15" value="0">
   <div class="row" style="margin-top:12px">
-    <button onclick="api('/api/seek?dir=down')">&#9664;&#9664; Seek</button>
-    <button onclick="api('/api/seek?dir=up')">Seek &#9654;&#9654;</button>
+    <button onclick="sk('down')">&#9664;&#9664; Seek</button>
+    <button onclick="sk('up')">Seek &#9654;&#9654;</button>
   </div>
+  <div class="meta" id="sm"></div>
   <div class="row" style="margin-top:8px">
     <input id="mf" type="number" step="0.1" min="87" max="108" placeholder="98.3">
     <button class="acc" style="flex:0 0 90px" onclick="tune()">Tune</button>
@@ -821,6 +884,15 @@ function saveEd(){
   api('/api/preset/set?i='+slot+'&freq='+f+'&name='+
       encodeURIComponent(document.getElementById('en').value)).then(closeEd)
 }
+function sk(d){
+  var m=document.getElementById('sm');
+  m.textContent='Seeking...';
+  fetch('/api/seek?dir='+d).then(function(r){return r.json()}).then(function(j){
+    S=j;draw();
+    m.textContent=j.seekSaved>=0?'Saved to slot '+(j.seekSaved+1):
+      j.preset>=0?'Already in slot '+(j.preset+1):'Not saved';
+  }).catch(function(){m.textContent=''})
+}
 function tune(){
   var f=Math.round(parseFloat(document.getElementById('mf').value)*100);
   if(!(f>=8700&&f<=10800)){alert('Frequency must be between 87.0 and 108.0');return}
@@ -838,7 +910,9 @@ poll(); setInterval(poll,1000);
 
 static char jsonBuf[1024];
 
-static void buildStatusJson() {
+// seekSaved is only meaningful in the /api/seek reply; every other caller
+// passes -1 so a poll never re-announces an old save.
+static void buildStatusJson(int8_t seekSaved) {
   char fbuf[10];
   freqToStr(cfg.freq10k, fbuf, sizeof(fbuf));
 
@@ -854,7 +928,7 @@ static void buildStatusJson() {
     "{\"board\":\"%s\",\"radio\":%s,\"freq\":%u,\"freqStr\":\"%s\",\"preset\":%d,"
     "\"vol\":%u,\"rssi\":%u,\"stereo\":%s,\"tuned\":%s,\"oled\":%u,\"oledFound\":%s,"
     "\"wifi\":%s,\"ip\":\"%s\",\"host\":\"%s\",\"ota\":%s,\"build\":\"%s\","
-    "\"presets\":[",
+    "\"seekSaved\":%d,\"presets\":[",
     BOARD_NAME,
     radio.present() ? "true" : "false",
     (unsigned)cfg.freq10k, fbuf,
@@ -868,7 +942,8 @@ static void buildStatusJson() {
     wifiUp() ? "true" : "false",
     ip.c_str(), MDNS_HOSTNAME,
     OTA_ENABLED ? "true" : "false",
-    FW_BUILD);
+    FW_BUILD,
+    (int)seekSaved);
 
   if (n < 0) n = 0;
   for (uint8_t i = 0; i < PRESET_COUNT && n < (int)sizeof(jsonBuf) - 2; i++) {
@@ -881,10 +956,12 @@ static void buildStatusJson() {
   snprintf(jsonBuf + n, sizeof(jsonBuf) - n, "]}");
 }
 
-static void sendStatus() {
-  buildStatusJson();
+static void sendStatusWith(int8_t seekSaved) {
+  buildStatusJson(seekSaved);
   server.send(200, F("application/json"), jsonBuf);
 }
+
+static void sendStatus() { sendStatusWith(-1); }
 
 // Copies a user-supplied preset name into the settings, keeping only printable
 // ASCII and dropping the two characters that would need JSON escaping.
@@ -1181,9 +1258,7 @@ static void routes() {
 
   server.on("/api/seek", HTTP_GET, []() {
     bool up = !server.hasArg("dir") || server.arg("dir") != "down";
-    uint16_t landed = radio.seek(up);
-    applyFrequency(landed, PRESET_MANUAL);
-    sendStatus();
+    sendStatusWith(seekAndSave(up));
   });
 
   server.on("/api/preset/set", HTTP_GET, []() {

@@ -266,6 +266,8 @@ STA_CONNECTING (WIFI_STA, WiFiMulti over saved list) ◀────────
 
 #### Three levels, smallest first
 
+*Implemented 2026-10-29 (`SEEK_AUTOSAVE`):* `/api/seek` now saves a found station automatically. When the seek ends on a station (STC set, SF clear, FM_TRUE) that isn't already in the list, it is written to the next slot whose name is still its own frequency. Slots fill as a ring starting from `Settings.autoSlot`, the former `pad` byte, so `SETTINGS_VER` is unchanged and existing presets load intact. The reply carries `seekSaved` (slot index, or `-1`).
+
 1. **Save current station to a preset.** No firmware change is needed: `GET /api/preset/set?i=N&freq=<current>&name=…` already accepts any frequency. Add a "Save to preset" button after seek in the Android app, and in `INDEX_HTML`, which is a UI-only change.
 2. **Full-band scan into a station log.** Covered below.
 3. **Fill presets from the first scan.** `FACTORY_PRESETS` are one city's stations, so a shipped unit elsewhere starts with mostly empty slots. After the first scan, or after a factory reset, fill the 10 presets with the strongest results, but only if the presets are untouched (equal to `FACTORY_PRESETS` with default names). That check needs no `Settings` change. A long button press can start a rescan.
