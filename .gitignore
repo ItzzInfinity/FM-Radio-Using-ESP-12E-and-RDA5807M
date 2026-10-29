@@ -14,3 +14,19 @@ _autosave-*
 # Stale gerber exports: these predate the current board file. Regenerate from
 # hardware/ with `kicad-cli pcb export gerbers` before ordering.
 hardware/Drill/
+
+# Android app (android/): Gradle/IDE output and machine-local files.
+# local.properties holds this machine's SDK path; keystores must never be public.
+android/**/build/
+android/.gradle/
+android/.kotlin/
+android/.idea/
+android/local.properties
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/
+*.iml
+*.apk
+*.aab
+*.jks
+*.keystore
